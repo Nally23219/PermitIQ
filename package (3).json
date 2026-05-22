@@ -1,0 +1,575 @@
+import { useState, useRef, useCallback } from "react";
+import "./App.css";
+
+const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:3001";
+
+const BLUE = "#0B2D6B";
+const GOLD = "#C8922A";
+const RED  = "#7B1C1C";
+
+const HOODS = [
+  "Back Bay","South End","Charlestown","Dorchester","East Boston",
+  "Hyde Park","Jamaica Plain","Mattapan","Mission Hill","Roslindale",
+  "Roxbury","South Boston","West Roxbury","Fenway / Kenmore",
+  "Allston / Brighton","North End","Cambridge","Somerville",
+  "Brookline","Quincy","Newton",
+];
+const PTYPES = [
+  "Single-family home","2-family home","3-family home","Condo unit",
+  "Multi-family (4+ units)","Commercial building","Mixed-use building",
+];
+const PROJ = [
+  "Residential addition","New construction","ADU / in-law unit",
+  "Deck / porch / shed","Dormer / roof alteration","Commercial renovation",
+  "Change of use","Mixed-use development",
+];
+
+// ── Shared small components ───────────────────────────────────────────────────
+function Label({ children }) {
+  return <div className="field-label">{children}</div>;
+}
+
+function Note({ type, children }) {
+  return <div className={`note note-${type}`}>{children}</div>;
+}
+
+function Spinner({ color }) {
+  return <div className="spinner" style={{ borderTopColor: color || BLUE }} />;
+}
+
+function FileChip({ file, status, onRemove }) {
+  const ext = file.name.toLowerCase();
+  const icon = ext.endsWith(".pdf") ? "📄" : ext.endsWith(".txt") ? "📝" : "🖼️";
+  const size = file.size > 1048576
+    ? (file.size / 1048576).toFixed(1) + " MB"
+    : (file.size / 1024).toFixed(0) + " KB";
+  const statusClass =
+    status === "Ready" ? "st-ok" :
+    status === "Uploading…" ? "st-proc" : "st-warn";
+
+  return (
+    <div className="file-chip">
+      <span>{icon}</span>
+      <span className="chip-name">{file.name}</span>
+      <span className="chip-size">{size}</span>
+      {status && <span className={`chip-status ${statusClass}`}>{status}</span>}
+      <button className="chip-remove" onClick={onRemove}>×</button>
+    </div>
+  );
+}
+
+function DropZone({ label, sublabel, multiple, files, statuses, onAdd, onRemove }) {
+  const [drag, setDrag] = useState(false);
+  const inp = useRef(null);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setDrag(false);
+    const dropped = Array.from(e.dataTransfer.files);
+    if (dropped.length) onAdd(dropped);
+  }, [onAdd]);
+
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div
+        className={`drop-zone ${drag ? "drag" : ""}`}
+        onClick={() => inp.current && inp.current.click()}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={handleDrop}
+      >
+        <input
+          ref={inp}
+          type="file"
+          accept=".pdf,.txt,.jpg,.jpeg,.png"
+          multiple={!!multiple}
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = Array.from(e.target.files);
+            if (f.length) onAdd(f);
+            e.target.value = "";
+          }}
+        />
+        <div className="drop-icon">📎</div>
+        <div className="drop-title">{files.length > 0 ? "Add more files" : "Click or drag to upload"}</div>
+        <div className="drop-sub">{sublabel}</div>
+      </div>
+      {files.map((f, i) => (
+        <FileChip
+          key={f.name + i}
+          file={f}
+          status={(statuses || [])[i]}
+          onRemove={() => onRemove(i)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Format AI result text ─────────────────────────────────────────────────────
+function Formatted({ text }) {
+  if (!text) return null;
+  const elements = [];
+
+  text.split("\n").forEach((line, i) => {
+    const heading = line.match(/^\*\*(.+)\*\*$/);
+    const numbered = line.match(/^(\d+)\. (.+)$/);
+    const bullet = line.match(/^[•\-] (.+)$/);
+
+    if (heading) {
+      elements.push(
+        <div key={i} className="result-heading">{heading[1]}</div>
+      );
+    } else if (numbered) {
+      elements.push(
+        <div key={i} className="result-row">
+          <span className="result-num">{numbered[1]}.</span>
+          <span>{numbered[2]}</span>
+        </div>
+      );
+    } else if (bullet) {
+      elements.push(
+        <div key={i} className="result-row">
+          <span className="result-bull">•</span>
+          <span>{bullet[1]}</span>
+        </div>
+      );
+    } else if (!line.trim()) {
+      elements.push(<div key={i} className="result-gap" />);
+    } else {
+      const parts = line.split(/\*\*([^*]+)\*\*/g);
+      elements.push(
+        <div key={i} className="result-line">
+          {parts.map((p, j) => j % 2 === 1 ? <strong key={j}>{p}</strong> : p)}
+        </div>
+      );
+    }
+  });
+
+  return <>{elements}</>;
+}
+
+function ResultPanel({ text, downloadName }) {
+  const download = () => {
+    const blob = new Blob([text], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = downloadName + ".txt";
+    a.click();
+  };
+
+  return (
+    <div className="result-panel">
+      <div className="result-header">
+        <div>
+          <div className="result-header-title">Analysis complete</div>
+          <div className="result-header-sub">Boston Zoning Code · 780 CMR · ISD Requirements</div>
+        </div>
+        <div className="result-badge">✓ Ready</div>
+      </div>
+      <div className="result-body">
+        <Formatted text={text} />
+      </div>
+      <div className="result-footer">
+        <button className="action-btn primary" onClick={download}>⬇ Download report</button>
+        <button className="action-btn" onClick={() => window.open("https://permitsonline.boston.gov", "_blank")}>File ZBA appeal ↗</button>
+        <button className="action-btn" onClick={() => window.open("https://bostonplans.org", "_blank")}>BPDA zoning viewer ↗</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Plan Analysis Section ─────────────────────────────────────────────────────
+function PlanSection() {
+  const [files, setFiles]       = useState([]);
+  const [statuses, setStatuses] = useState([]);
+  const [hood, setHood]         = useState("");
+  const [propType, setPropType] = useState("");
+  const [desc, setDesc]         = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [result, setResult]     = useState(null);
+  const [error, setError]       = useState(null);
+
+  const addFiles = useCallback((incoming) => {
+    const allowed = incoming.slice(0, Math.max(0, 5 - files.length));
+    if (!allowed.length) return;
+    setFiles((prev) => [...prev, ...allowed]);
+    setStatuses((prev) => [...prev, ...allowed.map(() => "Ready")]);
+  }, [files.length]);
+
+  const removeFile = (i) => {
+    setFiles((prev) => prev.filter((_, j) => j !== i));
+    setStatuses((prev) => prev.filter((_, j) => j !== i));
+  };
+
+  const clear = () => {
+    setFiles([]); setStatuses([]); setDesc("");
+    setHood(""); setPropType(""); setResult(null); setError(null);
+  };
+
+  const run = async () => {
+    if (!files.length && !desc.trim()) {
+      setError("Upload plans or describe your project below.");
+      return;
+    }
+    setError(null); setResult(null); setLoading(true);
+
+    try {
+      const form = new FormData();
+      files.forEach((f) => form.append("files", f));
+      form.append("neighborhood", hood);
+      form.append("propertyType", propType);
+      form.append("description", desc);
+
+      const res = await fetch(`${API_BASE}/api/analyze-plans`, {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setResult(data.result);
+    } catch (e) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="section">
+      <h2 className="section-title blue">Plan analysis &amp; variance identification</h2>
+      <p className="section-desc">
+        Upload your construction or addition plans. The AI checks every Boston zoning standard,
+        identifies every variance you need, and gives you a step-by-step ZBA action plan.
+      </p>
+
+      <Note type="blue">
+        <span>ℹ️</span>
+        <span>
+          Upload your plans — PDFs are parsed automatically and images are read by AI vision.
+          Add project details below for the most accurate variance analysis.
+        </span>
+      </Note>
+
+      <DropZone
+        label="Construction / addition plans"
+        sublabel="PDF, JPG, PNG, or TXT · up to 5 files"
+        multiple
+        files={files}
+        statuses={statuses}
+        onAdd={addFiles}
+        onRemove={removeFile}
+      />
+
+      <div className="field-gap" />
+
+      <div className="grid-2">
+        <div>
+          <Label>Boston neighborhood</Label>
+          <select value={hood} onChange={(e) => setHood(e.target.value)}>
+            <option value="">Select…</option>
+            {HOODS.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div>
+          <Label>Property type</Label>
+          <select value={propType} onChange={(e) => setPropType(e.target.value)}>
+            <option value="">Select…</option>
+            {PTYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="field-gap" />
+      <Label>Project description — dimensions, scope, zoning info you know</Label>
+      <textarea
+        className="textarea"
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
+        placeholder="e.g. Rear addition of 600 sqft to existing 2-family. Lot is 4,200 sqft, existing FAR 1.8, proposed FAR 2.3. Side yard 4ft. Zoning district 2F-4000."
+        rows={4}
+      />
+
+      <div className="btn-row">
+        <button className="btn-primary" onClick={run} disabled={loading}>
+          {loading ? "Analyzing…" : "Analyze plans & identify variances"}
+        </button>
+        <button className="btn-clear" onClick={clear}>Clear</button>
+      </div>
+
+      {loading && (
+        <div className="loading-box">
+          <Spinner />
+          <div>
+            <div className="loading-title">Checking all Boston zoning standards…</div>
+            <div className="loading-sub">Analyzing against Boston Zoning Code and 780 CMR</div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <Note type="red"><span>⚠️</span><span>{error}</span></Note>
+      )}
+
+      {result && (
+        <ResultPanel text={result} downloadName="PermitIQ_Plan_Analysis" />
+      )}
+    </div>
+  );
+}
+
+// ── Denial Appeal Section ─────────────────────────────────────────────────────
+function DenialSection() {
+  const [dFiles, setDFiles]     = useState([]);
+  const [dStats, setDStats]     = useState([]);
+  const [pFiles, setPFiles]     = useState([]);
+  const [pStats, setPStats]     = useState([]);
+  const [dText, setDText]       = useState("");
+  const [pText, setPText]       = useState("");
+  const [hood, setHood]         = useState("");
+  const [projType, setProjType] = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [result, setResult]     = useState(null);
+  const [error, setError]       = useState(null);
+
+  const addDenial = useCallback((incoming) => {
+    const allowed = incoming.slice(0, Math.max(0, 2 - dFiles.length));
+    if (!allowed.length) return;
+    setDFiles((prev) => [...prev, ...allowed]);
+    setDStats((prev) => [...prev, ...allowed.map(() => "Ready")]);
+  }, [dFiles.length]);
+
+  const addPlans = useCallback((incoming) => {
+    const allowed = incoming.slice(0, Math.max(0, 5 - pFiles.length));
+    if (!allowed.length) return;
+    setPFiles((prev) => [...prev, ...allowed]);
+    setPStats((prev) => [...prev, ...allowed.map(() => "Ready")]);
+  }, [pFiles.length]);
+
+  const clear = () => {
+    setDFiles([]); setDStats([]); setPFiles([]); setPStats([]);
+    setDText(""); setPText(""); setHood(""); setProjType("");
+    setResult(null); setError(null);
+  };
+
+  const run = async () => {
+    if (!dFiles.length && !dText.trim()) {
+      setError("Please upload your ISD denial letter or paste the denial text into the box below.");
+      return;
+    }
+    setError(null); setResult(null); setLoading(true);
+
+    try {
+      const form = new FormData();
+      dFiles.forEach((f) => form.append("denialFiles", f));
+      pFiles.forEach((f) => form.append("planFiles", f));
+      form.append("denialText", dText);
+      form.append("planNotes", pText);
+      form.append("neighborhood", hood);
+      form.append("projectType", projType);
+
+      const res = await fetch(`${API_BASE}/api/analyze-denial`, {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setResult(data.result);
+    } catch (e) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="section">
+      <h2 className="section-title red">Denial appeal strategy</h2>
+      <p className="section-desc">
+        Got an ISD denial? Upload your refusal letter and original plans. The AI analyzes every
+        violation and builds a complete strategy to win your ZBA appeal.
+      </p>
+
+      <Note type="amber">
+        <span>⏰</span>
+        <span>
+          <strong>45-day deadline:</strong> You have 45 days from your ISD refusal letter to file
+          a ZBA appeal. After that you wait one full year. Start now.
+        </span>
+      </Note>
+
+      <div className="grid-2">
+        <DropZone
+          label="ISD denial / refusal letter *"
+          sublabel="PDF or image — parsed automatically"
+          multiple={false}
+          files={dFiles}
+          statuses={dStats}
+          onAdd={addDenial}
+          onRemove={(i) => {
+            setDFiles((p) => p.filter((_, j) => j !== i));
+            setDStats((p) => p.filter((_, j) => j !== i));
+          }}
+        />
+        <DropZone
+          label="Plans / drawings (optional but recommended)"
+          sublabel="PDF or image · up to 5 files"
+          multiple
+          files={pFiles}
+          statuses={pStats}
+          onAdd={addPlans}
+          onRemove={(i) => {
+            setPFiles((p) => p.filter((_, j) => j !== i));
+            setPStats((p) => p.filter((_, j) => j !== i));
+          }}
+        />
+      </div>
+
+      <div className="field-gap" />
+
+      <Label>Denial letter text — paste here if your PDF is scanned or image-based</Label>
+      <textarea
+        className="textarea"
+        value={dText}
+        onChange={(e) => setDText(e.target.value)}
+        placeholder={"Paste your denial text here if the upload doesn't extract it automatically.\n\nFiles are processed server-side — both digital PDFs and images work."}
+        rows={5}
+      />
+
+      <div className="field-gap" />
+
+      <Label>Plan notes (optional)</Label>
+      <textarea
+        className="textarea"
+        value={pText}
+        onChange={(e) => setPText(e.target.value)}
+        placeholder="e.g. Proposed rear addition 400 sqft. Lot 4,200 sqft. FAR proposed 2.4, allowed 2.0. Side yard 3ft proposed, 5ft required. Zoning district 3F-2000."
+        rows={3}
+      />
+
+      <div className="field-gap" />
+
+      <div className="grid-2">
+        <div>
+          <Label>Neighborhood</Label>
+          <select value={hood} onChange={(e) => setHood(e.target.value)}>
+            <option value="">Select…</option>
+            {HOODS.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div>
+          <Label>Project type</Label>
+          <select value={projType} onChange={(e) => setProjType(e.target.value)}>
+            <option value="">Select…</option>
+            {PROJ.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="btn-row">
+        <button className="btn-primary red" onClick={run} disabled={loading}>
+          {loading ? "Building strategy…" : "Analyze denial & build appeal strategy"}
+        </button>
+        <button className="btn-clear" onClick={clear}>Clear</button>
+      </div>
+
+      {loading && (
+        <div className="loading-box">
+          <Spinner color={RED} />
+          <div>
+            <div className="loading-title" style={{ color: RED }}>Building ZBA appeal strategy…</div>
+            <div className="loading-sub">Analyzing denial against Boston Zoning Code and 780 CMR</div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <Note type="red"><span>⚠️</span><span>{error}</span></Note>
+      )}
+
+      {result && (
+        <ResultPanel text={result} downloadName="PermitIQ_Denial_Appeal" />
+      )}
+    </div>
+  );
+}
+
+// ── Root App ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [tab, setTab] = useState("plans");
+
+  return (
+    <div className="app">
+      <nav className="nav">
+        <div className="nav-inner">
+          <div className="nav-brand">
+            <div className="nav-seal">B</div>
+            <div>
+              <div className="nav-title">Permit<span>IQ</span> Boston</div>
+              <div className="nav-sub">ISD · ZBA · 780 CMR · AI-Powered</div>
+            </div>
+          </div>
+          <div className="nav-tabs">
+            <button
+              className={`nav-tab ${tab === "plans" ? "active" : ""}`}
+              onClick={() => setTab("plans")}
+            >
+              🏗️ Plan Analysis
+            </button>
+            <button
+              className={`nav-tab ${tab === "denial" ? "active" : ""}`}
+              onClick={() => setTab("denial")}
+            >
+              📋 Denial Appeal
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <main className="main">
+        <div className="sect-tabs">
+          <button
+            className={`sect-tab ${tab === "plans" ? "active-blue" : ""}`}
+            onClick={() => setTab("plans")}
+          >
+            <span className="sect-icon">🏗️</span>
+            <span className="sect-title">Plan analysis</span>
+            <span className="sect-sub">Upload plans → variance list + ZBA action plan</span>
+          </button>
+          <button
+            className={`sect-tab ${tab === "denial" ? "active-red" : ""}`}
+            onClick={() => setTab("denial")}
+          >
+            <span className="sect-icon">📋</span>
+            <span className="sect-title">Denial appeal</span>
+            <span className="sect-sub">Upload denial + plans → win your ZBA appeal</span>
+          </button>
+        </div>
+
+        <div className="card">
+          {tab === "plans" ? <PlanSection /> : <DenialSection />}
+        </div>
+
+        <footer className="footer">
+          <div className="footer-links">
+            {[
+              ["ISD Boston", "https://www.boston.gov/departments/inspectional-services"],
+              ["Permits Online", "https://permitsonline.boston.gov"],
+              ["BPDA Zoning Viewer", "https://bostonplans.org"],
+              ["ZBA Filing Guide", "https://www.boston.gov/departments/inspectional-services/how-file-appeal-zoning-board"],
+              ["780 CMR", "https://www.mass.gov/building-code"],
+            ].map(([label, url]) => (
+              <a key={label} href={url} target="_blank" rel="noreferrer" className="footer-link">
+                {label} ↗
+              </a>
+            ))}
+          </div>
+          <p className="footer-note">
+            For guidance only — not legal advice. Consult a licensed attorney for complex ZBA proceedings.
+          </p>
+        </footer>
+      </main>
+    </div>
+  );
+}
